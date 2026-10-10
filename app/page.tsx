@@ -6,7 +6,7 @@ export default function Home() {
       </h1>
 
       <p className="text-xl text-center max-w-2xl">
-        Test prompts, compare responses, and build with N-ATLAS.
+        Test prompts, compare responses, explore multilingual AI, and build with N-ATLAS.
       </p>
     </main>
   );
