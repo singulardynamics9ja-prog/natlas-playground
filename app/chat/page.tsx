@@ -36,6 +36,7 @@ type MessageFeedback = {
   accuracyRated: boolean;
   relevanceRated: boolean;
   saved: boolean;
+  workspaceSaved?: boolean;
 };
 
 type EvaluationCase = {
@@ -345,10 +346,83 @@ export default function ChatPage() {
         })),
       );
       setSelectedEvaluationCaseId(null);
+
+      if (rows.length) {
+        try {
+          const savedFeedback = await supabaseRequest<
+            Array<{
+              message_id: string;
+              helpful: boolean;
+              accuracy_rating: number;
+              relevance_rating: number;
+            }>
+          >(
+            `feedback?select=message_id,helpful,accuracy_rating,relevance_rating&message_id=in.(${rows
+              .map((item) => encodeURIComponent(item.id))
+              .join(",")})`,
+          );
+          const restored = Object.fromEntries(
+            savedFeedback.map((item) => [
+              item.message_id,
+              {
+                helpful: item.helpful,
+                helpfulRated: true,
+                accuracy: item.accuracy_rating,
+                relevance: item.relevance_rating,
+                accuracyRated: true,
+                relevanceRated: true,
+                saved: true,
+                workspaceSaved: true,
+              },
+            ]),
+          );
+          setFeedback((current) => ({ ...current, ...restored }));
+        } catch (error) {
+          setNotice(
+            error instanceof Error
+              ? `Conversation loaded, but saved feedback could not be restored: ${error.message}`
+              : "Conversation loaded, but saved feedback could not be restored.",
+          );
+        }
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not open this conversation.");
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function deleteConversation(conversation: Conversation) {
+    const confirmed = window.confirm(
+      "Delete this conversation and its messages and feedback from the workspace? This also clears feedback and judge metadata stored on this device for all conversations. This cannot be undone.",
+    );
+    if (!confirmed) return;
+
+    setNotice("");
+    try {
+      await supabaseRequest(
+        `conversations?id=eq.${encodeURIComponent(conversation.id)}`,
+        { method: "DELETE" },
+      );
+      setFeedback({});
+      setConversations((current) => current.filter((item) => item.id !== conversation.id));
+      if (conversationId === conversation.id) {
+        setConversationId(null);
+        setMessages([]);
+      }
+      try {
+        localStorage.removeItem(feedbackStorageKey);
+        localStorage.removeItem(evaluationStorageKey);
+        setNotice("Conversation, messages, workspace feedback, and local evaluation data deleted.");
+      } catch (error) {
+        setNotice(
+          error instanceof Error
+            ? `Workspace conversation deleted, but local feedback could not be cleared: ${error.message}`
+            : "Workspace conversation deleted, but local browser data could not be cleared.",
+        );
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "The conversation could not be deleted.");
     }
   }
 
@@ -561,9 +635,18 @@ export default function ChatPage() {
       relevanceRated: false,
       saved: false,
     };
-    const next = { ...current, helpful, helpfulRated: true, saved: false };
+    const next = {
+      ...current,
+      helpful,
+      helpfulRated: true,
+      saved: false,
+      workspaceSaved: false,
+    };
     const locallySaved = persistFeedbackLocally(messageId, { ...next, saved: true });
-    setFeedback((items) => ({ ...items, [messageId]: { ...next, saved: locallySaved } }));
+    setFeedback((items) => ({
+      ...items,
+      [messageId]: { ...next, saved: locallySaved, workspaceSaved: false },
+    }));
 
     if (!isSupabaseConfigured()) {
       if (locallySaved) setNotice("Thanks — your feedback was saved on this device.");
@@ -589,7 +672,10 @@ export default function ChatPage() {
         },
         token,
       );
-      setFeedback((items) => ({ ...items, [messageId]: { ...next, saved: true } }));
+      setFeedback((items) => ({
+        ...items,
+        [messageId]: { ...next, saved: true, workspaceSaved: true },
+      }));
       setNotice("Thanks — your feedback was saved.");
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Feedback could not be synced.";
@@ -617,10 +703,13 @@ export default function ChatPage() {
     };
     const next: MessageFeedback =
       field === "accuracy"
-        ? { ...current, accuracy: value, accuracyRated: true, saved: false }
-        : { ...current, relevance: value, relevanceRated: true, saved: false };
+        ? { ...current, accuracy: value, accuracyRated: true, saved: false, workspaceSaved: false }
+        : { ...current, relevance: value, relevanceRated: true, saved: false, workspaceSaved: false };
     const locallySaved = persistFeedbackLocally(messageId, { ...next, saved: true });
-    setFeedback((items) => ({ ...items, [messageId]: { ...next, saved: locallySaved } }));
+    setFeedback((items) => ({
+      ...items,
+      [messageId]: { ...next, saved: locallySaved, workspaceSaved: false },
+    }));
 
     if (!isSupabaseConfigured()) {
       if (locallySaved) setNotice("Your rating was saved on this device.");
@@ -643,7 +732,10 @@ export default function ChatPage() {
         },
         token,
       );
-      setFeedback((items) => ({ ...items, [messageId]: { ...next, saved: true } }));
+      setFeedback((items) => ({
+        ...items,
+        [messageId]: { ...next, saved: true, workspaceSaved: true },
+      }));
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Feedback could not be synced.";
       setNotice(
@@ -869,18 +961,36 @@ export default function ChatPage() {
         {conversations.length ? (
           <div className="space-y-1">
             {conversations.map((conversation) => (
-              <button
+              <div
                 key={conversation.id}
-                onClick={() => void openConversation(conversation)}
-                disabled={isTyping}
-                className={`w-full truncate rounded-lg px-2.5 py-2 text-left text-xs transition ${
-                  conversation.id === conversationId
-                    ? "bg-[#008751]/15 text-emerald-100"
-                    : "text-slate-400 hover:bg-white/[0.05] hover:text-slate-100"
-                }`}
               >
-                {conversation.title}
-              </button>
+                <div
+                  className={`flex items-center gap-1 rounded-lg transition ${
+                    conversation.id === conversationId
+                      ? "bg-[#008751]/15 text-emerald-100"
+                      : "text-slate-400 hover:bg-white/[0.05] hover:text-slate-100"
+                  }`}
+                >
+                  <button
+                    onClick={() => void openConversation(conversation)}
+                    disabled={isTyping}
+                    className="min-w-0 flex-1 truncate px-2.5 py-2 text-left text-xs"
+                    aria-current={conversation.id === conversationId ? "page" : undefined}
+                  >
+                    {conversation.title}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void deleteConversation(conversation)}
+                    disabled={isTyping}
+                    className="mr-1 rounded-md px-2 py-1 text-slate-500 transition hover:bg-red-400/10 hover:text-red-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-red-300 disabled:opacity-40"
+                    aria-label={`Delete conversation: ${conversation.title}`}
+                    title="Delete conversation"
+                  >
+                    <span aria-hidden="true">×</span>
+                  </button>
+                </div>
+              </div>
             ))}
           </div>
         ) : (
@@ -899,6 +1009,13 @@ export default function ChatPage() {
           />
           <span className="text-[11px] text-slate-500">{persistenceStatus}</span>
         </div>
+        <Link
+          href="/privacy"
+          onClick={() => setSidebarOpen(false)}
+          className="mt-3 inline-flex rounded text-[11px] text-slate-500 underline decoration-white/20 underline-offset-4 hover:text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d6b45b]"
+        >
+          Privacy & data controls
+        </Link>
       </div>
     </aside>
   );
@@ -960,7 +1077,11 @@ export default function ChatPage() {
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8 sm:py-8">
           <div className="mx-auto flex min-h-full max-w-4xl flex-col">
             {isLoading ? (
-              <div className="flex flex-1 items-center justify-center text-sm text-slate-500">
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex flex-1 items-center justify-center text-sm text-slate-500"
+              >
                 Loading your workspace…
               </div>
             ) : messages.length === 0 ? (
@@ -1147,7 +1268,9 @@ export default function ChatPage() {
                           </label>
                           {feedback[item.id]?.saved && (
                             <span className="text-emerald-300">
-                              {isSupabaseConfigured() ? "Saved" : "Saved on this device"}
+                              {feedback[item.id]?.workspaceSaved
+                                ? "Synced to your workspace"
+                                : "Saved on this device"}
                             </span>
                           )}
                           {feedback[item.id]?.saved &&
@@ -1229,6 +1352,7 @@ export default function ChatPage() {
                 placeholder="Message N-ATLAS…"
                 rows={2}
                 maxLength={8000}
+                aria-describedby="message-composer-hint"
                 disabled={isTyping || isLoading}
                 className="max-h-40 min-h-12 w-full resize-y bg-transparent px-3 py-2 text-sm leading-6 text-slate-100 outline-none placeholder:text-slate-600 disabled:opacity-60"
                 aria-label="Message N-ATLAS"
@@ -1245,8 +1369,11 @@ export default function ChatPage() {
                 </div>
               )}
               <div className="flex items-center justify-between px-1 pb-0.5">
-                <span className="px-2 text-[10px] text-slate-600">
-                  Enter to send · Shift + Enter for a new line
+                <span id="message-composer-hint" className="px-2 text-[10px] text-slate-600">
+                  Up to 8,000 characters · Enter to send · Shift + Enter for a new line
+                </span>
+                <span aria-hidden="true" className="mr-auto text-[10px] text-slate-600">
+                  {message.length}/8000
                 </span>
                 <button
                   type="submit"
@@ -1257,9 +1384,16 @@ export default function ChatPage() {
                 </button>
               </div>
             </form>
-            <p className="mt-2 text-center text-[10px] text-slate-600">
-              N-ATLAS can make mistakes. Review important information.
-            </p>
+            <div className="mt-2 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[10px] text-slate-600">
+              <span>N-ATLAS can make mistakes. Review important information.</span>
+              <span aria-hidden="true">·</span>
+              <Link
+                href="/privacy"
+                className="rounded underline decoration-white/20 underline-offset-2 transition hover:text-slate-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d6b45b]"
+              >
+                Privacy &amp; data controls
+              </Link>
+            </div>
           </div>
         </footer>
       </section>

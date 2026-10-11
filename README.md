@@ -14,6 +14,10 @@ Local demo mode works without additional infrastructure. It does not save conver
 
 Apply `supabase/migrations/20261010000000_initial_schema.sql` to your Supabase project. In Supabase Auth, enable anonymous sign-ins; the app uses anonymous accounts for private, per-user conversations and does not require email addresses. Then set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
 
+The anonymous session is kept in the current browser tab. Refreshing that tab preserves access, but closing the tab or clearing site data can make an anonymous account unrecoverable. Conversations saved to Supabase remain there until deleted. Use the delete control beside a conversation in the chat history to delete that conversation and its messages and workspace feedback. This also clears browser-local feedback and judge metadata; clearing browser site data alone does not remove Supabase records.
+
+See the in-app [Privacy & data controls](/privacy) page for details about what is stored locally, what is sent to a configured model endpoint, and how to remove data.
+
 ### Optional model gateway
 
 Configure `NATLAS_CHAT_API_URL` and, if required, `NATLAS_CHAT_API_KEY` for your model gateway.
@@ -38,6 +42,8 @@ The `messages` array contains up to 30 recent turns with `user` or `assistant` r
 The chat includes six repeatable evaluation prompts: a Yoruba, Hausa, and Igbo translation; an English explanation for a secondary school student; a Nigerian fintech business plan; and a grant proposal outline. Selecting a case sets its response language and marks the resulting live endpoint response for the suite. Reviewers can rate helpfulness, accuracy, and relevance using the existing feedback controls; all three ratings must be explicitly submitted for a case to count as reviewed.
 
 The coverage count and average ratings describe evaluator-submitted feedback in the current conversation; they are qualitative, not automated model scores. Demo previews are excluded. Translation review guidance focuses on meaning and natural language, not exact string matching to a single reference translation. Judge reports download as JSON and include the current conversation's prompts, live responses, client-observed endpoint round-trip times, and any submitted ratings. Reports may contain conversation content; review them before sharing.
+
+Feedback ratings are saved in the current browser and synced to the signed-in workspace when Supabase is configured. Saved workspace ratings are restored when a conversation is reopened. Judge labels, response language, and round-trip timings remain local to that browser.
 
 ## Database and access control
 

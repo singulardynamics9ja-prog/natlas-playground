@@ -109,8 +109,14 @@ export default function PromptsPage() {
           ))}
         </div>
 
-        <footer className="mt-16 border-t border-white/[0.06] py-6 text-[11px] text-slate-600">
-          N-ATLAS Playground · Developer infrastructure for multilingual AI.
+        <footer className="mt-16 flex flex-col gap-3 border-t border-white/[0.06] py-6 text-[11px] text-slate-600 sm:flex-row sm:items-center sm:justify-between">
+          <span>N-ATLAS Playground · Developer infrastructure for multilingual AI.</span>
+          <Link
+            href="/privacy"
+            className="w-fit text-slate-400 underline decoration-white/20 underline-offset-4 transition hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d6b45b]"
+          >
+            Privacy &amp; data controls
+          </Link>
         </footer>
       </div>
     </main>

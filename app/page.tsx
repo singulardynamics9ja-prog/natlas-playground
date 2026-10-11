@@ -1,4 +1,11 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+
+export const metadata: Metadata = {
+  title: "N-ATLAS Playground | Multilingual AI Developer Workspace",
+  description:
+    "Explore prompts and experiment with Nigeria's multilingual AI across English, Yoruba, Hausa, and Igbo.",
+};
 
 const features = [
   {
@@ -271,7 +278,15 @@ export default function Home() {
       <footer className="relative border-t border-white/[0.06] px-5 py-6 sm:px-8 lg:px-10">
         <div className="mx-auto flex max-w-7xl flex-col gap-2 text-[11px] text-slate-600 sm:flex-row sm:items-center sm:justify-between">
           <span>N-ATLAS Playground</span>
-          <span>Developer infrastructure for multilingual AI.</span>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <span>Developer infrastructure for multilingual AI.</span>
+            <Link
+              href="/privacy"
+              className="rounded text-slate-400 underline decoration-white/20 underline-offset-4 transition hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d6b45b]"
+            >
+              Privacy &amp; data controls
+            </Link>
+          </div>
         </div>
       </footer>
     </main>
