@@ -25,7 +25,7 @@ const sections = [
   {
     title: "Local storage",
     content:
-      "This browser stores feedback and judge metadata in local storage. Conversation text is not stored in local storage. Clearing the browser's site data removes the local feedback, evaluation metadata, and current anonymous session, but does not delete records already saved in Supabase.",
+      "This browser stores response feedback, judge metadata, and your preferred response language in local storage. Conversation text is not stored in local storage. Deleting a conversation removes local feedback and judge metadata for its messages while preserving data for other chats. Clearing the browser's site data removes all local preferences and the current anonymous session, but does not delete records already saved in Supabase.",
   },
 ];
 
@@ -77,10 +77,11 @@ export default function PrivacyPage() {
           <h2 className="text-base font-semibold text-white">Deleting your data</h2>
           <p className="mt-3 text-sm leading-7 text-slate-400">
             In the chat sidebar, use the delete button beside a saved conversation to permanently
-            remove it and its messages and workspace feedback. This also clears feedback and judge
-            metadata stored locally on this device. The action requires confirmation and cannot be
-            undone. To clear only browser-local data, clear this website&apos;s storage in your browser
-            settings; that does not remove saved workspace conversations.
+            remove it and its messages and workspace feedback. Feedback and judge metadata for that
+            conversation are also removed locally; data for other conversations is kept. The action
+            requires confirmation and cannot be undone. Use Settings to clear all browser-local
+            ratings and judge data. Clearing this website&apos;s storage in your browser does not
+            remove saved workspace conversations.
           </p>
           <Link
             href="/chat"

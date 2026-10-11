@@ -1,12 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  FormEvent,
+  KeyboardEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   getSupabaseAccessToken,
   isSupabaseConfigured,
   supabaseRequest,
 } from "@/lib/supabase";
+import { removeStoredRecordKeys } from "@/lib/chat-storage.mjs";
 
 type Language = "English" | "Yoruba" | "Hausa" | "Igbo";
 type Sender = "user" | "assistant";
@@ -16,6 +25,7 @@ type ChatMessage = {
   sender: Sender;
   content: string;
   timestamp: string;
+  storageStatus?: "saving" | "saved" | "not-saved";
   isDemo?: boolean;
   evaluationCaseId?: string;
   responseLanguage?: Language;
@@ -55,6 +65,8 @@ type EvaluationMetadata = {
 
 const feedbackStorageKey = "natlas-playground-feedback";
 const evaluationStorageKey = "natlas-playground-evaluation-metadata";
+const languageStorageKey = "natlas-playground-response-language";
+const languagePreferenceEvent = "natlas-language-preference-change";
 const languages: Language[] = ["English", "Yoruba", "Hausa", "Igbo"];
 const supportedLanguageSet = new Set<string>(languages);
 const promptTemplates = [
@@ -220,10 +232,37 @@ function isLanguage(value: unknown): value is Language {
   return typeof value === "string" && supportedLanguageSet.has(value);
 }
 
+function subscribeLanguagePreference(onChange: () => void) {
+  window.addEventListener("storage", onChange);
+  window.addEventListener(languagePreferenceEvent, onChange);
+  return () => {
+    window.removeEventListener("storage", onChange);
+    window.removeEventListener(languagePreferenceEvent, onChange);
+  };
+}
+
+function getLanguagePreference(): Language {
+  const stored = localStorage.getItem(languageStorageKey);
+  return isLanguage(stored) ? stored : "English";
+}
+
+function getServerLanguagePreference(): Language {
+  return "English";
+}
+
+function monotonicNow() {
+  return performance.now();
+}
+
 export default function ChatPage() {
   const [initialFeedback] = useState(readStoredFeedback);
   const [message, setMessage] = useState("");
-  const [language, setLanguage] = useState<Language>("English");
+  const language = useSyncExternalStore(
+    subscribeLanguagePreference,
+    getLanguagePreference,
+    getServerLanguagePreference,
+  );
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [selectedEvaluationCaseId, setSelectedEvaluationCaseId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -231,6 +270,7 @@ export default function ChatPage() {
   const [isTyping, setIsTyping] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [retryMessageId, setRetryMessageId] = useState<string | null>(null);
   const [notice, setNotice] = useState(initialFeedback.warning);
   const [persistenceStatus, setPersistenceStatus] = useState("Connecting to workspace…");
   const [feedback, setFeedback] = useState<Record<string, MessageFeedback>>(
@@ -239,6 +279,12 @@ export default function ChatPage() {
   const messageEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const languageSelectRef = useRef<HTMLSelectElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsCloseRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (settingsOpen) settingsCloseRef.current?.focus();
+  }, [settingsOpen]);
 
   function persistFeedbackLocally(messageId: string, value: MessageFeedback) {
     try {
@@ -340,6 +386,7 @@ export default function ChatPage() {
       setMessages(
         rows.map((item) => ({
           ...item,
+          storageStatus: "saved",
           evaluationCaseId: metadata[item.id]?.caseId,
           responseLanguage: metadata[item.id]?.language,
           durationMs: metadata[item.id]?.durationMs,
@@ -394,31 +441,38 @@ export default function ChatPage() {
 
   async function deleteConversation(conversation: Conversation) {
     const confirmed = window.confirm(
-      "Delete this conversation and its messages and feedback from the workspace? This also clears feedback and judge metadata stored on this device for all conversations. This cannot be undone.",
+      "Delete this conversation and its messages and feedback from the workspace? Local feedback and judge metadata for these messages will also be removed. This cannot be undone.",
     );
     if (!confirmed) return;
 
     setNotice("");
     try {
+      const conversationMessages = await supabaseRequest<Array<{ id: string }>>(
+        `messages?select=id&conversation_id=eq.${encodeURIComponent(conversation.id)}`,
+      );
+      const messageIds = conversationMessages.map((item) => item.id);
       await supabaseRequest(
         `conversations?id=eq.${encodeURIComponent(conversation.id)}`,
         { method: "DELETE" },
       );
-      setFeedback({});
+      const removedIds = new Set(messageIds);
+      setFeedback((current) =>
+        Object.fromEntries(Object.entries(current).filter(([id]) => !removedIds.has(id))),
+      );
       setConversations((current) => current.filter((item) => item.id !== conversation.id));
       if (conversationId === conversation.id) {
         setConversationId(null);
         setMessages([]);
       }
       try {
-        localStorage.removeItem(feedbackStorageKey);
-        localStorage.removeItem(evaluationStorageKey);
-        setNotice("Conversation, messages, workspace feedback, and local evaluation data deleted.");
+        removeStoredRecordKeys(localStorage, feedbackStorageKey, messageIds);
+        removeStoredRecordKeys(localStorage, evaluationStorageKey, messageIds);
+        setNotice("Conversation and its messages, feedback, and evaluation data were deleted.");
       } catch (error) {
         setNotice(
           error instanceof Error
-            ? `Workspace conversation deleted, but local feedback could not be cleared: ${error.message}`
-            : "Workspace conversation deleted, but local browser data could not be cleared.",
+            ? `Workspace conversation deleted, but some local feedback or evaluation data could not be cleared: ${error.message}`
+            : "Workspace conversation deleted, but some local browser data could not be cleared.",
         );
       }
     } catch (error) {
@@ -430,6 +484,7 @@ export default function ChatPage() {
     if (isTyping) return;
     setConversationId(null);
     setMessages([]);
+    setRetryMessageId(null);
     setSelectedEvaluationCaseId(null);
     setNotice("");
     setSidebarOpen(false);
@@ -444,28 +499,35 @@ export default function ChatPage() {
   }
 
   function applyEvaluationCase(evaluationCase: EvaluationCase) {
-    setLanguage(evaluationCase.language);
+    changeLanguage(evaluationCase.language);
     setMessage(evaluationCase.prompt);
     setSelectedEvaluationCaseId(evaluationCase.id);
     setSidebarOpen(false);
     composerRef.current?.focus();
   }
 
-  async function sendMessage(event?: FormEvent<HTMLFormElement>) {
+  async function sendMessage(
+    event?: FormEvent<HTMLFormElement>,
+    retryMessage?: ChatMessage,
+  ) {
     event?.preventDefault();
-    const content = message.trim();
+    const content = retryMessage?.content ?? message.trim();
     if (!content || isTyping) return;
 
     setMessage("");
     setNotice("");
+    if (!retryMessage) setRetryMessageId(null);
     setIsTyping(true);
     const activeEvaluationCase = evaluationCases.find(
       (evaluationCase) => evaluationCase.id === selectedEvaluationCaseId,
     );
     let activeConversationId = conversationId;
+    let submittedUserMessage = retryMessage;
+    let pendingAssistantMessageId: string | null = null;
+    let responseCanBeRetried = false;
 
     try {
-      if (isSupabaseConfigured() && !activeConversationId) {
+      if (!retryMessage && isSupabaseConfigured() && !activeConversationId) {
         const created = await supabaseRequest<Conversation[]>("conversations?select=id,title,created_at", {
           method: "POST",
           headers: { Prefer: "return=representation" },
@@ -484,15 +546,17 @@ export default function ChatPage() {
         ]);
       }
 
-      const userMessage: ChatMessage = {
+      const userMessage: ChatMessage = retryMessage ?? {
         id: newId(),
         sender: "user",
         content,
         timestamp: new Date().toISOString(),
+        storageStatus: isSupabaseConfigured() ? "saving" : "not-saved",
       };
+      submittedUserMessage = userMessage;
 
-      setMessages((current) => [...current, userMessage]);
-      if (isSupabaseConfigured() && activeConversationId) {
+      if (!retryMessage) setMessages((current) => [...current, userMessage]);
+      if (!retryMessage && isSupabaseConfigured() && activeConversationId) {
         await supabaseRequest("messages", {
           method: "POST",
           headers: { Prefer: "return=minimal" },
@@ -504,7 +568,13 @@ export default function ChatPage() {
             timestamp: userMessage.timestamp,
           }),
         });
+        setMessages((current) =>
+          current.map((item) =>
+            item.id === userMessage.id ? { ...item, storageStatus: "saved" } : item,
+          ),
+        );
       }
+      responseCanBeRetried = true;
 
       const accessToken = isSupabaseConfigured() ? await getSupabaseAccessToken() : null;
       if (!accessToken) {
@@ -527,7 +597,8 @@ export default function ChatPage() {
         return;
       }
 
-      const requestStartedAt = performance.now();
+      const requestStartedAt = monotonicNow();
+      setRetryMessageId(null);
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: {
@@ -535,7 +606,7 @@ export default function ChatPage() {
           Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
-          messages: [...messages, userMessage]
+          messages: [...messages.filter((item) => item.id !== userMessage.id), userMessage]
             .slice(-30)
             .map(({ sender, content: messageContent }) => ({
               role: sender,
@@ -564,16 +635,19 @@ export default function ChatPage() {
         throw new Error(result.error ?? `The model request failed (${response.status}).`);
       }
       if (!result.response?.trim()) throw new Error("The model returned an empty response.");
+      responseCanBeRetried = false;
 
       const assistantMessage: ChatMessage = {
         id: newId(),
         sender: "assistant",
         content: result.response.trim(),
         timestamp: new Date().toISOString(),
+        storageStatus: isSupabaseConfigured() ? "saving" : "not-saved",
         responseLanguage: language,
-        durationMs: Math.round(performance.now() - requestStartedAt),
+        durationMs: Math.round(monotonicNow() - requestStartedAt),
         ...(activeEvaluationCase ? { evaluationCaseId: activeEvaluationCase.id } : {}),
       };
+      pendingAssistantMessageId = assistantMessage.id;
 
       if (activeEvaluationCase && assistantMessage.durationMs !== undefined) {
         persistEvaluationMetadata(assistantMessage.id, {
@@ -596,6 +670,11 @@ export default function ChatPage() {
             timestamp: assistantMessage.timestamp,
           }),
         });
+        setMessages((current) =>
+          current.map((item) =>
+            item.id === assistantMessage.id ? { ...item, storageStatus: "saved" } : item,
+          ),
+        );
       }
 
       if (activeConversationId) {
@@ -613,8 +692,66 @@ export default function ChatPage() {
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Your message could not be sent.");
+      if (submittedUserMessage) {
+        setMessages((current) =>
+          current.map((item) =>
+            item.id === submittedUserMessage?.id && item.storageStatus === "saving"
+              ? { ...item, storageStatus: "not-saved" }
+              : item,
+          ),
+        );
+      }
+      if (pendingAssistantMessageId) {
+        setMessages((current) =>
+          current.map((item) =>
+            item.id === pendingAssistantMessageId && item.storageStatus === "saving"
+              ? { ...item, storageStatus: "not-saved" }
+              : item,
+          ),
+        );
+      }
+      if (responseCanBeRetried && submittedUserMessage) {
+        setRetryMessageId(submittedUserMessage.id);
+      }
     } finally {
       setIsTyping(false);
+    }
+  }
+
+  function clearLocalEvaluationData() {
+    const confirmed = window.confirm(
+      "Clear all feedback and judging metadata stored in this browser? This does not delete saved conversations or workspace feedback.",
+    );
+    if (!confirmed) return;
+
+    try {
+      localStorage.removeItem(feedbackStorageKey);
+      localStorage.removeItem(evaluationStorageKey);
+      setFeedback({});
+      setMessages((current) =>
+        current.map((item) => ({
+          ...item,
+          evaluationCaseId: undefined,
+          durationMs: undefined,
+        })),
+      );
+      setNotice("Browser-local feedback and judge metadata cleared.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Local evaluation data could not be cleared.");
+    }
+  }
+
+  function changeLanguage(nextLanguage: Language) {
+    setSelectedEvaluationCaseId(null);
+    try {
+      localStorage.setItem(languageStorageKey, nextLanguage);
+      window.dispatchEvent(new Event(languagePreferenceEvent));
+    } catch (error) {
+      setNotice(
+        error instanceof Error
+          ? `The language preference could not be changed or saved: ${error.message}`
+          : "The language preference could not be changed or saved.",
+      );
     }
   }
 
@@ -880,7 +1017,8 @@ export default function ChatPage() {
           <span aria-hidden="true">🕘</span> History
         </button>
         <button
-          onClick={() => languageSelectRef.current?.focus()}
+          ref={settingsButtonRef}
+          onClick={() => setSettingsOpen(true)}
           className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs font-medium text-slate-400 transition hover:bg-white/[0.05] hover:text-white"
         >
           <span aria-hidden="true">⚙️</span> Settings
@@ -1033,6 +1171,92 @@ export default function ChatPage() {
           <div className="relative z-10">{sidebar}</div>
         </div>
       )}
+      {settingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <button
+            type="button"
+            className="absolute inset-0 cursor-default"
+            onClick={() => setSettingsOpen(false)}
+            aria-label="Close settings"
+          />
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="workspace-settings-title"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setSettingsOpen(false);
+            }}
+            className="relative z-10 w-full max-w-lg rounded-2xl border border-white/10 bg-[#0b1710] p-5 shadow-2xl sm:p-7"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#d6b45b]">
+                  Workspace preferences
+                </p>
+                <h2 id="workspace-settings-title" className="mt-2 text-xl font-semibold text-white">
+                  Settings
+                </h2>
+              </div>
+              <button
+                ref={settingsCloseRef}
+                type="button"
+                onClick={() => {
+                  setSettingsOpen(false);
+                  settingsButtonRef.current?.focus();
+                }}
+                className="rounded-lg border border-white/10 px-3 py-2 text-xs text-slate-300 hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#d6b45b]"
+                aria-label="Close settings"
+              >
+                Close
+              </button>
+            </div>
+
+            <label className="mt-6 block text-xs font-medium text-slate-300" htmlFor="settings-language">
+              Default response language
+            </label>
+            <select
+              id="settings-language"
+              value={language}
+              onChange={(event) => {
+                if (isLanguage(event.target.value)) changeLanguage(event.target.value);
+              }}
+              className="mt-2 w-full rounded-lg border border-white/10 bg-[#101a14] px-3 py-2.5 text-sm text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#d6b45b]"
+            >
+              {languages.map((item) => (
+                <option key={item}>{item}</option>
+              ))}
+            </select>
+            <p className="mt-2 text-[11px] leading-5 text-slate-500">
+              This preference is stored in this browser and applied to new chats.
+            </p>
+
+            <div className="mt-6 rounded-xl border border-white/[0.07] bg-white/[0.025] p-4">
+              <h3 className="text-xs font-semibold text-slate-200">Workspace data retention</h3>
+              <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                Saved conversations remain in Supabase until you delete them. There is no automatic
+                expiry. Deleting a conversation removes its messages and workspace feedback.
+              </p>
+            </div>
+
+            <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+              <button
+                type="button"
+                onClick={clearLocalEvaluationData}
+                className="rounded-lg border border-amber-200/20 px-3 py-2.5 text-left text-xs font-medium text-amber-100 transition hover:bg-amber-100/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#d6b45b]"
+              >
+                Clear browser-local ratings &amp; judge data
+              </button>
+              <Link
+                href="/privacy"
+                onClick={() => setSettingsOpen(false)}
+                className="rounded-lg border border-white/10 px-3 py-2.5 text-left text-xs font-medium text-slate-300 transition hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#d6b45b]"
+              >
+                Privacy &amp; data controls
+              </Link>
+            </div>
+          </section>
+        </div>
+      )}
 
       <section className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-[68px] shrink-0 items-center justify-between border-b border-white/[0.07] bg-[#08130e]/90 px-3 sm:px-7">
@@ -1059,8 +1283,7 @@ export default function ChatPage() {
               value={language}
               onChange={(event) => {
                 if (isLanguage(event.target.value)) {
-                  setLanguage(event.target.value);
-                  setSelectedEvaluationCaseId(null);
+                  changeLanguage(event.target.value);
                 }
               }}
               ref={languageSelectRef}
@@ -1181,6 +1404,29 @@ export default function ChatPage() {
                       >
                         {item.content}
                       </div>
+                      {item.storageStatus && (
+                        <p
+                          className={`mt-1 text-[10px] ${
+                            item.storageStatus === "saved" ? "text-emerald-400/80" : "text-slate-600"
+                          }`}
+                        >
+                          {item.storageStatus === "saved"
+                            ? "Saved to your workspace"
+                            : item.storageStatus === "saving"
+                              ? "Saving to your workspace…"
+                              : "Not saved to a workspace"}
+                        </p>
+                      )}
+                      {item.sender === "user" && retryMessageId === item.id && (
+                        <button
+                          type="button"
+                          onClick={() => void sendMessage(undefined, item)}
+                          disabled={isTyping}
+                          className="mt-2 rounded-lg border border-[#d6b45b]/25 px-3 py-1.5 text-[11px] font-medium text-[#e3c879] transition hover:bg-[#d6b45b]/[0.08] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d6b45b] disabled:opacity-50"
+                        >
+                          Retry response
+                        </button>
+                      )}
                       {item.sender === "assistant" && (
                         <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
                           {item.responseLanguage && <span>Response language: {item.responseLanguage}</span>}
