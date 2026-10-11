@@ -17,6 +17,9 @@ type ChatMessage = {
   content: string;
   timestamp: string;
   isDemo?: boolean;
+  evaluationCaseId?: string;
+  responseLanguage?: Language;
+  durationMs?: number;
 };
 
 type Conversation = {
@@ -27,13 +30,32 @@ type Conversation = {
 
 type MessageFeedback = {
   helpful: boolean;
+  helpfulRated: boolean;
   accuracy: number;
   relevance: number;
+  accuracyRated: boolean;
+  relevanceRated: boolean;
   saved: boolean;
 };
 
+type EvaluationCase = {
+  id: string;
+  title: string;
+  language: Language;
+  prompt: string;
+  reviewFocus: string;
+};
+
+type EvaluationMetadata = {
+  caseId: string;
+  language: Language;
+  durationMs: number;
+};
+
 const feedbackStorageKey = "natlas-playground-feedback";
+const evaluationStorageKey = "natlas-playground-evaluation-metadata";
 const languages: Language[] = ["English", "Yoruba", "Hausa", "Igbo"];
+const supportedLanguageSet = new Set<string>(languages);
 const promptTemplates = [
   "Write a business plan for a fintech startup",
   "Translate this text to Yoruba",
@@ -46,11 +68,49 @@ const promptTemplates = [
   "Create a marketing strategy for a Nigerian startup",
   "Generate a product requirements document",
 ];
-const demoPrompts = [
-  "Translate “Welcome to Nigeria” into Yoruba.",
-  "Explain AI to a secondary school student.",
-  "Create a fintech startup business plan.",
-  "Generate a grant proposal outline.",
+const evaluationCases: EvaluationCase[] = [
+  {
+    id: "yoruba-welcome-translation",
+    title: "Yoruba translation",
+    language: "Yoruba",
+    prompt: "Translate “Welcome to Nigeria” into Yoruba.",
+    reviewFocus: "Meaning, natural phrasing, and correct Yoruba orthography.",
+  },
+  {
+    id: "hausa-welcome-translation",
+    title: "Hausa translation",
+    language: "Hausa",
+    prompt: "Translate “Welcome to Nigeria” into Hausa.",
+    reviewFocus: "Meaning, natural phrasing, and Hausa orthography.",
+  },
+  {
+    id: "igbo-welcome-translation",
+    title: "Igbo translation",
+    language: "Igbo",
+    prompt: "Translate “Welcome to Nigeria” into Igbo.",
+    reviewFocus: "Meaning, natural phrasing, and Igbo orthography.",
+  },
+  {
+    id: "english-ai-explanation",
+    title: "Student-friendly AI explanation",
+    language: "English",
+    prompt: "Explain AI to a secondary school student.",
+    reviewFocus: "Clarity, age-appropriate language, and a useful example.",
+  },
+  {
+    id: "english-fintech-business-plan",
+    title: "Fintech business plan",
+    language: "English",
+    prompt: "Create a fintech startup business plan.",
+    reviewFocus: "Practicality, structure, and relevance to Nigerian customers.",
+  },
+  {
+    id: "english-grant-proposal",
+    title: "Grant proposal outline",
+    language: "English",
+    prompt: "Generate a grant proposal outline.",
+    reviewFocus: "Completeness, clarity, and actionable sections.",
+  },
 ];
 
 function newId() {
@@ -93,8 +153,20 @@ function readStoredFeedback(): {
       ) {
         restored[id] = {
           helpful: value.helpful,
+          helpfulRated:
+            "helpfulRated" in value && typeof value.helpfulRated === "boolean"
+              ? value.helpfulRated
+              : false,
           accuracy: value.accuracy,
           relevance: value.relevance,
+          accuracyRated:
+            "accuracyRated" in value && typeof value.accuracyRated === "boolean"
+              ? value.accuracyRated
+              : false,
+          relevanceRated:
+            "relevanceRated" in value && typeof value.relevanceRated === "boolean"
+              ? value.relevanceRated
+              : false,
           saved: true,
         };
       }
@@ -109,10 +181,49 @@ function readStoredFeedback(): {
   }
 }
 
+function readStoredEvaluationMetadata(): Record<string, EvaluationMetadata> {
+  const stored = localStorage.getItem(evaluationStorageKey);
+  if (!stored) return {};
+
+  const parsed: unknown = JSON.parse(stored);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Stored evaluation metadata has an invalid format.");
+  }
+
+  const restored: Record<string, EvaluationMetadata> = {};
+  for (const [messageId, value] of Object.entries(parsed)) {
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "caseId" in value &&
+      typeof value.caseId === "string" &&
+      evaluationCases.some((evaluationCase) => evaluationCase.id === value.caseId) &&
+      "language" in value &&
+      isLanguage(value.language) &&
+      "durationMs" in value &&
+      typeof value.durationMs === "number" &&
+      Number.isFinite(value.durationMs) &&
+      value.durationMs >= 0
+    ) {
+      restored[messageId] = {
+        caseId: value.caseId,
+        language: value.language,
+        durationMs: value.durationMs,
+      };
+    }
+  }
+  return restored;
+}
+
+function isLanguage(value: unknown): value is Language {
+  return typeof value === "string" && supportedLanguageSet.has(value);
+}
+
 export default function ChatPage() {
   const [initialFeedback] = useState(readStoredFeedback);
   const [message, setMessage] = useState("");
   const [language, setLanguage] = useState<Language>("English");
+  const [selectedEvaluationCaseId, setSelectedEvaluationCaseId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -143,6 +254,24 @@ export default function ChatPage() {
     } catch (error) {
       setNotice(
         error instanceof Error ? error.message : "Response feedback could not be saved locally.",
+      );
+      return false;
+    }
+  }
+
+  function persistEvaluationMetadata(messageId: string, value: EvaluationMetadata) {
+    try {
+      const metadata = readStoredEvaluationMetadata();
+      localStorage.setItem(
+        evaluationStorageKey,
+        JSON.stringify({ ...metadata, [messageId]: value }),
+      );
+      return true;
+    } catch (error) {
+      setNotice(
+        error instanceof Error
+          ? error.message
+          : "Evaluation details could not be saved on this device.",
       );
       return false;
     }
@@ -196,8 +325,26 @@ export default function ChatPage() {
       const rows = await supabaseRequest<ChatMessage[]>(
         `messages?select=id,sender,content,timestamp&conversation_id=eq.${encodeURIComponent(conversation.id)}&order=timestamp.asc`,
       );
+      let metadata: Record<string, EvaluationMetadata> = {};
+      try {
+        metadata = readStoredEvaluationMetadata();
+      } catch (error) {
+        setNotice(
+          error instanceof Error
+            ? error.message
+            : "Evaluation details could not be loaded from this device.",
+        );
+      }
       setConversationId(conversation.id);
-      setMessages(rows);
+      setMessages(
+        rows.map((item) => ({
+          ...item,
+          evaluationCaseId: metadata[item.id]?.caseId,
+          responseLanguage: metadata[item.id]?.language,
+          durationMs: metadata[item.id]?.durationMs,
+        })),
+      );
+      setSelectedEvaluationCaseId(null);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not open this conversation.");
     } finally {
@@ -209,6 +356,7 @@ export default function ChatPage() {
     if (isTyping) return;
     setConversationId(null);
     setMessages([]);
+    setSelectedEvaluationCaseId(null);
     setNotice("");
     setSidebarOpen(false);
     composerRef.current?.focus();
@@ -216,6 +364,15 @@ export default function ChatPage() {
 
   function applyTemplate(template: string) {
     setMessage(template);
+    setSelectedEvaluationCaseId(null);
+    setSidebarOpen(false);
+    composerRef.current?.focus();
+  }
+
+  function applyEvaluationCase(evaluationCase: EvaluationCase) {
+    setLanguage(evaluationCase.language);
+    setMessage(evaluationCase.prompt);
+    setSelectedEvaluationCaseId(evaluationCase.id);
     setSidebarOpen(false);
     composerRef.current?.focus();
   }
@@ -228,6 +385,9 @@ export default function ChatPage() {
     setMessage("");
     setNotice("");
     setIsTyping(true);
+    const activeEvaluationCase = evaluationCases.find(
+      (evaluationCase) => evaluationCase.id === selectedEvaluationCaseId,
+    );
     let activeConversationId = conversationId;
 
     try {
@@ -287,11 +447,13 @@ export default function ChatPage() {
               "Local demo only — no N-ATLAS model is connected, so this is not a generated answer. Configure Supabase and a model endpoint to receive real responses.",
             timestamp: new Date().toISOString(),
             isDemo: true,
+            responseLanguage: language,
           },
         ]);
         return;
       }
 
+      const requestStartedAt = performance.now();
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: {
@@ -319,6 +481,7 @@ export default function ChatPage() {
               "Local demo only — no N-ATLAS model is connected, so this is not a generated answer. Configure a model endpoint to receive real responses.",
             timestamp: new Date().toISOString(),
             isDemo: true,
+            responseLanguage: language,
           },
         ]);
         return;
@@ -333,8 +496,19 @@ export default function ChatPage() {
         sender: "assistant",
         content: result.response.trim(),
         timestamp: new Date().toISOString(),
+        responseLanguage: language,
+        durationMs: Math.round(performance.now() - requestStartedAt),
+        ...(activeEvaluationCase ? { evaluationCaseId: activeEvaluationCase.id } : {}),
       };
 
+      if (activeEvaluationCase && assistantMessage.durationMs !== undefined) {
+        persistEvaluationMetadata(assistantMessage.id, {
+          caseId: activeEvaluationCase.id,
+          language,
+          durationMs: assistantMessage.durationMs,
+        });
+        setSelectedEvaluationCaseId(null);
+      }
       setMessages((current) => [...current, assistantMessage]);
       if (isSupabaseConfigured() && activeConversationId) {
         await supabaseRequest("messages", {
@@ -379,12 +553,15 @@ export default function ChatPage() {
 
   async function saveFeedback(messageId: string, helpful: boolean) {
     const current = feedback[messageId] ?? {
-      helpful,
+      helpful: false,
+      helpfulRated: false,
       accuracy: 3,
       relevance: 3,
+      accuracyRated: false,
+      relevanceRated: false,
       saved: false,
     };
-    const next = { ...current, helpful, saved: false };
+    const next = { ...current, helpful, helpfulRated: true, saved: false };
     const locallySaved = persistFeedbackLocally(messageId, { ...next, saved: true });
     setFeedback((items) => ({ ...items, [messageId]: { ...next, saved: locallySaved } }));
 
@@ -430,12 +607,18 @@ export default function ChatPage() {
     value: number,
   ) {
     const current = feedback[messageId] ?? {
-      helpful: true,
+      helpful: false,
+      helpfulRated: false,
       accuracy: 3,
       relevance: 3,
+      accuracyRated: false,
+      relevanceRated: false,
       saved: false,
     };
-    const next = { ...current, [field]: value, saved: false };
+    const next: MessageFeedback =
+      field === "accuracy"
+        ? { ...current, accuracy: value, accuracyRated: true, saved: false }
+        : { ...current, relevance: value, relevanceRated: true, saved: false };
     const locallySaved = persistFeedbackLocally(messageId, { ...next, saved: true });
     setFeedback((items) => ({ ...items, [messageId]: { ...next, saved: locallySaved } }));
 
@@ -469,6 +652,88 @@ export default function ChatPage() {
           : detail,
       );
     }
+  }
+
+  const evaluationResponses = messages.flatMap((item, index) => {
+    if (item.sender !== "assistant" || item.isDemo || !item.evaluationCaseId) return [];
+    const evaluationCase = evaluationCases.find(
+      (candidate) => candidate.id === item.evaluationCaseId,
+    );
+    if (!evaluationCase) return [];
+
+    const promptMessage = messages
+      .slice(0, index)
+      .reverse()
+      .find((candidate) => candidate.sender === "user");
+    return [{ item, evaluationCase, prompt: promptMessage?.content ?? "", feedback: feedback[item.id] }];
+  });
+  const reviewedEvaluationResponses = evaluationResponses.filter(
+    (result) =>
+      result.feedback?.saved &&
+      result.feedback.helpfulRated &&
+      result.feedback.accuracyRated &&
+      result.feedback.relevanceRated,
+  );
+  const reviewedEvaluationCaseCount = new Set(
+    reviewedEvaluationResponses.map((result) => result.evaluationCase.id),
+  ).size;
+  const averageAccuracy = reviewedEvaluationResponses.length
+    ? reviewedEvaluationResponses.reduce((sum, result) => sum + (result.feedback?.accuracy ?? 0), 0) /
+      reviewedEvaluationResponses.length
+    : null;
+  const averageRelevance = reviewedEvaluationResponses.length
+    ? reviewedEvaluationResponses.reduce((sum, result) => sum + (result.feedback?.relevance ?? 0), 0) /
+      reviewedEvaluationResponses.length
+    : null;
+
+  function downloadEvaluationReport() {
+    if (!evaluationResponses.length) {
+      setNotice("Run at least one judge test against a live model response before exporting a report.");
+      return;
+    }
+
+    const report = {
+      product: "N-ATLAS Playground",
+      generatedAt: new Date().toISOString(),
+      scope: "Responses from the currently open conversation",
+      methodology:
+        "Qualitative evaluation. Ratings are supplied by the evaluator and are not an automated benchmark or independently verified ground truth.",
+      coverage: {
+        reviewedCases: reviewedEvaluationCaseCount,
+        totalCases: evaluationCases.length,
+      },
+      results: evaluationResponses.map(({ item, evaluationCase, prompt, feedback: rating }) => ({
+        caseId: evaluationCase.id,
+        test: evaluationCase.title,
+        responseLanguage: item.responseLanguage ?? evaluationCase.language,
+        reviewFocus: evaluationCase.reviewFocus,
+        prompt,
+        response: item.content,
+        clientObservedResponseTimeMs: item.durationMs ?? null,
+        responseTimestamp: item.timestamp,
+        review:
+          rating?.saved &&
+          rating.helpfulRated &&
+          rating.accuracyRated &&
+          rating.relevanceRated
+          ? {
+              status: "reviewed",
+              helpful: rating.helpful,
+              accuracy: rating.accuracy,
+              relevance: rating.relevance,
+            }
+          : { status: "awaiting helpfulness, accuracy, and relevance ratings" },
+      })),
+    };
+    const file = new Blob([JSON.stringify(report, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(file);
+    const download = document.createElement("a");
+    download.href = url;
+    download.download = `natlas-judge-report-${new Date().toISOString().slice(0, 10)}.json`;
+    download.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   const sidebar = (
@@ -549,6 +814,52 @@ export default function ChatPage() {
           ))}
         </div>
 
+        <section className="mt-7 border-t border-white/[0.06] pt-5" aria-labelledby="judge-suite-title">
+          <div className="flex items-center justify-between px-1">
+            <h2
+              id="judge-suite-title"
+              className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#d6b45b]"
+            >
+              Judge evaluation suite
+            </h2>
+            <span className="text-[10px] text-slate-500">
+              {reviewedEvaluationCaseCount}/{evaluationCases.length}
+            </span>
+          </div>
+          <p className="px-1 pt-2 text-[10px] leading-4 text-slate-500">
+            Repeatable tests across four languages and practical use cases.
+          </p>
+          <div className="mt-2 space-y-1">
+            {evaluationCases.map((evaluationCase) => (
+              <button
+                key={evaluationCase.id}
+                onClick={() => applyEvaluationCase(evaluationCase)}
+                className="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-[11px] text-slate-400 transition hover:bg-[#008751]/[0.1] hover:text-slate-100"
+              >
+                <span className="truncate">{evaluationCase.title}</span>
+                <span className="shrink-0 text-[9px] text-slate-600">{evaluationCase.language}</span>
+              </button>
+            ))}
+          </div>
+          <p className="px-1 pt-2 text-[10px] leading-4 text-slate-600">
+            Human ratings are qualitative feedback, not an automated benchmark.
+          </p>
+          {reviewedEvaluationResponses.length > 0 && (
+            <p className="px-1 pt-2 text-[10px] leading-4 text-slate-400">
+              Average evaluator ratings · accuracy {averageAccuracy?.toFixed(1)}/5 · relevance{" "}
+              {averageRelevance?.toFixed(1)}/5
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={downloadEvaluationReport}
+            disabled={!evaluationResponses.length}
+            className="mt-3 w-full rounded-lg border border-[#d6b45b]/20 px-3 py-2 text-left text-[11px] font-medium text-[#e3c879] transition hover:bg-[#d6b45b]/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Download judge report
+          </button>
+        </section>
+
         <div id="recent-chats" className="mb-3 mt-8 flex scroll-mt-4 items-center justify-between px-1">
           <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
             Recent chats
@@ -618,14 +929,23 @@ export default function ChatPage() {
             </button>
             <div>
               <h1 className="text-sm font-semibold text-white">Chat playground</h1>
-              <p className="mt-0.5 text-[11px] text-slate-500">Experiment with N-ATLAS</p>
+              <p className="mt-0.5 text-[11px] text-slate-500">
+                {reviewedEvaluationCaseCount > 0
+                  ? `${reviewedEvaluationCaseCount} of ${evaluationCases.length} judge cases reviewed`
+                  : "Experiment with N-ATLAS"}
+              </p>
             </div>
           </div>
           <label className="flex items-center gap-2 text-xs text-slate-400">
             <span className="hidden sm:inline">Response language</span>
             <select
               value={language}
-              onChange={(event) => setLanguage(event.target.value as Language)}
+              onChange={(event) => {
+                if (isLanguage(event.target.value)) {
+                  setLanguage(event.target.value);
+                  setSelectedEvaluationCaseId(null);
+                }
+              }}
               ref={languageSelectRef}
               className="rounded-lg border border-white/[0.09] bg-[#111a14] px-3 py-2 text-xs text-slate-200 outline-none focus:border-[#008751]/70"
               aria-label="Response language"
@@ -659,31 +979,44 @@ export default function ChatPage() {
                     Choose a language or select a prompt template to begin.
                   </p>
                   <p className="mt-2 max-w-lg text-xs leading-5 text-slate-500">
-                    Explore in English, Yoruba, Hausa, or Igbo. Start with an example below or
-                    write your own prompt.
+                    Run the same practical test prompts across English, Yoruba, Hausa, and Igbo.
+                    Review real responses and rate accuracy and relevance.
                   </p>
                 </div>
                 <div>
                   <div className="mb-3 flex items-center gap-2">
                     <span className="h-px w-5 bg-[#d6b45b]/60" />
                     <h3 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                      Try Demo Prompts
+                      Try the judge test suite
                     </h3>
+                    <span className="text-[10px] text-slate-600">
+                      {evaluationCases.length} repeatable tests
+                    </span>
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2">
-                  {demoPrompts.map((template) => (
-                    <button
-                      key={template}
-                      onClick={() => applyTemplate(template)}
-                      className="group rounded-xl border border-white/[0.08] bg-white/[0.025] p-4 text-left text-xs leading-5 text-slate-300 transition hover:border-[#008751]/50 hover:bg-[#008751]/[0.07] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d6b45b]"
-                    >
-                      <span>{template}</span>
-                      <span className="mt-2 block text-[10px] text-slate-600 transition group-hover:text-[#d6b45b]">
-                        Use prompt →
-                      </span>
-                    </button>
-                  ))}
+                    {evaluationCases.map((evaluationCase) => (
+                      <button
+                        key={evaluationCase.id}
+                        onClick={() => applyEvaluationCase(evaluationCase)}
+                        className="group rounded-xl border border-white/[0.08] bg-white/[0.025] p-4 text-left text-xs leading-5 text-slate-300 transition hover:border-[#008751]/50 hover:bg-[#008751]/[0.07] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d6b45b]"
+                      >
+                        <span className="flex items-center justify-between gap-2">
+                          <span className="font-medium text-white">{evaluationCase.title}</span>
+                          <span className="shrink-0 text-[9px] text-[#d6b45b]">
+                            {evaluationCase.language}
+                          </span>
+                        </span>
+                        <span className="mt-2 block text-slate-400">{evaluationCase.prompt}</span>
+                        <span className="mt-2 block text-[10px] text-slate-600">
+                          Review: {evaluationCase.reviewFocus}
+                        </span>
+                      </button>
+                    ))}
                   </div>
+                  <p className="mt-3 text-[10px] leading-5 text-slate-600">
+                    Demo previews are labeled and excluded from judge coverage. Translation prompts
+                    use reviewer ratings; no single reference translation is treated as ground truth.
+                  </p>
                 </div>
               </div>
             ) : (
@@ -728,13 +1061,32 @@ export default function ChatPage() {
                         {item.content}
                       </div>
                       {item.sender === "assistant" && (
+                        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
+                          {item.responseLanguage && <span>Response language: {item.responseLanguage}</span>}
+                          <span>{item.isDemo ? "Preview only · not model-generated" : "Live model endpoint"}</span>
+                          {item.durationMs !== undefined && (
+                            <span>
+                              Endpoint round trip: {(item.durationMs / 1000).toFixed(1)}s
+                            </span>
+                          )}
+                          {item.evaluationCaseId && (
+                            <span className="text-[#d6b45b]">
+                              Judge test:{" "}
+                              {evaluationCases.find(
+                                (evaluationCase) => evaluationCase.id === item.evaluationCaseId,
+                              )?.title ?? "Evaluation case"}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {item.sender === "assistant" && (
                         <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
                           <span className="mr-1 text-slate-500">Was this useful?</span>
                           <button
                             onClick={() => void saveFeedback(item.id, true)}
                             aria-label="Helpful"
                             className={`rounded-lg border px-2.5 py-1.5 transition ${
-                              feedback[item.id]?.helpful
+                              feedback[item.id]?.helpfulRated && feedback[item.id].helpful
                                 ? "border-[#008751]/50 bg-[#008751]/[0.15] text-emerald-100"
                                 : "border-white/[0.08] text-slate-400 hover:border-[#008751]/35 hover:text-white"
                             }`}
@@ -745,7 +1097,8 @@ export default function ChatPage() {
                             onClick={() => void saveFeedback(item.id, false)}
                             aria-label="Not Helpful"
                             className={`rounded-lg border px-2.5 py-1.5 transition ${
-                              feedback[item.id]?.helpful === false
+                              feedback[item.id]?.helpfulRated &&
+                              feedback[item.id].helpful === false
                                 ? "border-[#d6b45b]/40 bg-[#d6b45b]/[0.1] text-[#e8cf83]"
                                 : "border-white/[0.08] text-slate-400 hover:border-[#d6b45b]/30 hover:text-white"
                             }`}
@@ -755,13 +1108,18 @@ export default function ChatPage() {
                           <label className="ml-2 flex items-center gap-1.5 text-slate-500">
                             Accuracy
                             <select
-                              value={feedback[item.id]?.accuracy ?? 3}
+                              value={
+                                feedback[item.id]?.accuracyRated
+                                  ? feedback[item.id].accuracy
+                                  : 0
+                              }
                               onChange={(event) =>
                                 void updateRating(item.id, "accuracy", Number(event.target.value))
                               }
                               className="rounded border border-white/[0.08] bg-[#101a14] px-1.5 py-1 text-slate-300"
                               aria-label="Rate accuracy from 1 to 5"
                             >
+                              <option value={0} disabled>Rate</option>
                               {[1, 2, 3, 4, 5].map((rating) => (
                                 <option key={rating} value={rating}>{rating}</option>
                               ))}
@@ -770,13 +1128,18 @@ export default function ChatPage() {
                           <label className="flex items-center gap-1.5 text-slate-500">
                             Relevance
                             <select
-                              value={feedback[item.id]?.relevance ?? 3}
+                              value={
+                                feedback[item.id]?.relevanceRated
+                                  ? feedback[item.id].relevance
+                                  : 0
+                              }
                               onChange={(event) =>
                                 void updateRating(item.id, "relevance", Number(event.target.value))
                               }
                               className="rounded border border-white/[0.08] bg-[#101a14] px-1.5 py-1 text-slate-300"
                               aria-label="Rate relevance from 1 to 5"
                             >
+                              <option value={0} disabled>Rate</option>
                               {[1, 2, 3, 4, 5].map((rating) => (
                                 <option key={rating} value={rating}>{rating}</option>
                               ))}
@@ -787,6 +1150,14 @@ export default function ChatPage() {
                               {isSupabaseConfigured() ? "Saved" : "Saved on this device"}
                             </span>
                           )}
+                          {feedback[item.id]?.saved &&
+                            (!feedback[item.id].helpfulRated ||
+                              !feedback[item.id].accuracyRated ||
+                              !feedback[item.id].relevanceRated) && (
+                              <span className="basis-full text-slate-500">
+                                Rate helpfulness, accuracy, and relevance to count this test as reviewed.
+                              </span>
+                            )}
                         </div>
                       )}
                     </div>
@@ -844,7 +1215,16 @@ export default function ChatPage() {
               <textarea
                 ref={composerRef}
                 value={message}
-                onChange={(event) => setMessage(event.target.value)}
+                onChange={(event) => {
+                  const nextMessage = event.target.value;
+                  setMessage(nextMessage);
+                  const selectedCase = evaluationCases.find(
+                    (evaluationCase) => evaluationCase.id === selectedEvaluationCaseId,
+                  );
+                  if (selectedCase && nextMessage !== selectedCase.prompt) {
+                    setSelectedEvaluationCaseId(null);
+                  }
+                }}
                 onKeyDown={handleComposerKeyDown}
                 placeholder="Message N-ATLAS…"
                 rows={2}
@@ -853,6 +1233,17 @@ export default function ChatPage() {
                 className="max-h-40 min-h-12 w-full resize-y bg-transparent px-3 py-2 text-sm leading-6 text-slate-100 outline-none placeholder:text-slate-600 disabled:opacity-60"
                 aria-label="Message N-ATLAS"
               />
+              {selectedEvaluationCaseId && (
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] px-3 py-2 text-[10px] text-[#e3c879]">
+                  <span>
+                    Judge test:{" "}
+                    {evaluationCases.find(
+                      (evaluationCase) => evaluationCase.id === selectedEvaluationCaseId,
+                    )?.title ?? "Evaluation case"}
+                  </span>
+                  <span>Response language · {language}</span>
+                </div>
+              )}
               <div className="flex items-center justify-between px-1 pb-0.5">
                 <span className="px-2 text-[10px] text-slate-600">
                   Enter to send · Shift + Enter for a new line
