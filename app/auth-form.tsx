@@ -137,6 +137,14 @@ export default function AuthForm({ mode }: AuthFormProps) {
                 className="w-full rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-[#008751] focus:ring-2 focus:ring-[#008751]/20"
                 placeholder={isSignUp ? "At least 8 characters" : "Your password"}
               />
+              {!isSignUp && (
+                <Link
+                  href="/forgot-password"
+                  className="mt-2 inline-flex text-xs text-emerald-200 underline decoration-emerald-200/30 underline-offset-4 transition hover:text-white"
+                >
+                  Forgot your password?
+                </Link>
+              )}
             </div>
             {isSignUp && (
               <div>

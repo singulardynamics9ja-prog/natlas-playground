@@ -18,6 +18,16 @@ The session is kept in the current browser tab. Refreshing that tab preserves ac
 
 See the in-app [Privacy & data controls](/privacy) page for details about what is stored locally, what is sent to a configured model endpoint, and how to remove data.
 
+### Supabase account setup and production checklist
+
+1. In the Supabase SQL Editor for your project, run `supabase/migrations/20261010000000_initial_schema.sql`.
+2. In **Authentication → Providers**, enable **Anonymous Sign-Ins** and **Email**. Keep email confirmations enabled for production.
+3. In **Authentication → URL Configuration**, set **Site URL** to the production origin (for example, `https://your-app.example.com`). Add `http://localhost:3000/**` and `https://your-app.example.com/**` to **Redirect URLs**, replacing the production example with your actual domain. The app redirects email-confirmation and password-recovery links to `/login` and `/reset-password` on the current origin. Add any Vercel preview origins you intend to test explicitly; do not use an unrestricted wildcard in production.
+4. In Vercel **Project Settings → Environment Variables**, set `NEXT_PUBLIC_SUPABASE_URL` and the project's public **publishable** key (or legacy anon key) for **Production**. Never use a `service_role` key in the browser or a `NEXT_PUBLIC_` variable. Redeploy the production branch after changing environment variables.
+5. After the deployment is ready, test a new account from an anonymous workspace: save a conversation, create the account, confirm the email, then sign in again and verify the conversation is still present. Also test sign-in in a separate browser, password reset from `/forgot-password`, and that an expired or reused reset link is rejected.
+
+Database changes and production secrets must be applied in the Supabase and Vercel dashboards; they cannot be applied by the client app. Do not consider production account storage ready until the migration, redirect URLs, environment variables, and end-to-end checks above are complete.
+
 ### Optional model gateway
 
 Configure `NATLAS_CHAT_API_URL` and, if required, `NATLAS_CHAT_API_KEY` for your model gateway.

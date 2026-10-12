@@ -15,6 +15,7 @@ type AuthSessionResponse = {
 type AuthRequestOptions = {
   method?: "GET" | "POST" | "PUT";
   accessToken?: string;
+  redirectTo?: string;
 };
 
 function configuration() {
@@ -37,7 +38,10 @@ async function authRequest<T>(
     throw new Error("Supabase is not configured. Add its URL and anon key to your environment.");
   }
 
-  const response = await fetch(`${config.url}/auth/v1/${path}`, {
+  const redirectQuery = options.redirectTo
+    ? `${path.includes("?") ? "&" : "?"}redirect_to=${encodeURIComponent(options.redirectTo)}`
+    : "";
+  const response = await fetch(`${config.url}/auth/v1/${path}${redirectQuery}`, {
     method: options.method ?? "POST",
     headers: {
       "Content-Type": "application/json",
@@ -105,10 +109,15 @@ export async function signUpWithEmail(name: string, email: string, password: str
     throw new Error("This browser already has a registered account. Sign in from the account page.");
   }
 
+  const redirectTo = `${window.location.origin}/login`;
   await authRequest(
     "user",
     { email, password, data: { full_name: name } },
-    { method: "PUT", accessToken },
+    {
+      method: "PUT",
+      accessToken,
+      redirectTo,
+    },
   );
 }
 
@@ -118,6 +127,69 @@ export async function signInWithPassword(email: string, password: string) {
     password,
   });
   saveAuthSession(session);
+}
+
+export async function requestPasswordReset(email: string) {
+  if (typeof window === "undefined") {
+    throw new Error("Password recovery is only available in a browser.");
+  }
+
+  const redirectTo = `${window.location.origin}/reset-password`;
+  await authRequest(
+    `recover?redirect_to=${encodeURIComponent(redirectTo)}`,
+    { email },
+  );
+}
+
+export function completePasswordRecoveryFromUrl() {
+  if (typeof window === "undefined") {
+    throw new Error("Password recovery is only available in a browser.");
+  }
+
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  if (!params.has("access_token") && !params.has("error")) {
+    throw new Error("This password reset link is missing or has already expired.");
+  }
+
+  window.history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${window.location.search}`,
+  );
+
+  const providerError =
+    params.get("error_description") ?? params.get("error");
+  if (providerError) {
+    throw new Error(providerError.replace(/\+/g, " "));
+  }
+  if (params.get("type") !== "recovery") {
+    throw new Error("This link is not a password reset link.");
+  }
+
+  const expiresIn = Number(params.get("expires_in"));
+  const accessToken = params.get("access_token");
+  const refreshToken = params.get("refresh_token");
+  if (!accessToken || !refreshToken || !Number.isFinite(expiresIn) || expiresIn <= 0) {
+    throw new Error("This password reset link is invalid or has expired.");
+  }
+
+  saveAuthSession({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    expires_in: expiresIn,
+  });
+}
+
+export async function updateSupabasePassword(password: string) {
+  const accessToken = await getSupabaseAccessToken();
+  if (!accessToken) throw new Error("Your password reset session has expired. Request a new link.");
+  await authRequest("user", { password }, { method: "PUT", accessToken });
+}
+
+export function clearSupabaseSession() {
+  if (typeof window !== "undefined") {
+    window.sessionStorage.removeItem(sessionKey);
+  }
 }
 
 export async function getSupabaseAccessToken() {

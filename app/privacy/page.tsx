@@ -15,7 +15,7 @@ const sections = [
   {
     title: "Accounts and workspace",
     content:
-      "The playground starts with a Supabase anonymous account and does not require an email address to explore. You can link that workspace to an email address and password from Create account, preserving its conversations. Account email addresses and names are handled by Supabase Auth. The session token is kept in this browser tab's session storage; signing in lets you access the account in another browser. Clearing site data removes the local session, but does not delete saved workspace records.",
+      "The playground starts with a Supabase anonymous account and does not require an email address to explore. You can link that workspace to an email address and password from Create account, preserving its conversations. Account email addresses and names are handled by Supabase Auth. The session token is kept in this browser tab's session storage; signing in lets you access the account in another browser. You can request a password reset email if you lose access. Clearing site data removes the local session, but does not delete saved workspace records.",
   },
   {
     title: "Feedback and evaluation",
