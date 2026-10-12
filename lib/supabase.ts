@@ -6,6 +6,17 @@ type SupabaseSession = {
 
 const sessionKey = "natlas.supabase.session";
 
+type AuthSessionResponse = {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+};
+
+type AuthRequestOptions = {
+  method?: "GET" | "POST" | "PUT";
+  accessToken?: string;
+};
+
 function configuration() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -16,31 +27,97 @@ export function isSupabaseConfigured() {
   return configuration() !== null;
 }
 
-async function authRequest<T>(path: string, body: Record<string, string>) {
+async function authRequest<T>(
+  path: string,
+  body: Record<string, unknown>,
+  options: AuthRequestOptions = {},
+) {
   const config = configuration();
   if (!config) {
     throw new Error("Supabase is not configured. Add its URL and anon key to your environment.");
   }
 
   const response = await fetch(`${config.url}/auth/v1/${path}`, {
-    method: "POST",
+    method: options.method ?? "POST",
     headers: {
       "Content-Type": "application/json",
       apikey: config.key,
+      ...(options.accessToken
+        ? { Authorization: `Bearer ${options.accessToken}` }
+        : {}),
     },
-    body: JSON.stringify(body),
+    ...(options.method === "GET" ? {} : { body: JSON.stringify(body) }),
   });
 
-  const result = (await response.json()) as T & { msg?: string; message?: string; error_description?: string };
+  const result = (await response.json()) as T & {
+    msg?: string;
+    message?: string;
+    error?: string;
+    error_description?: string;
+  };
   if (!response.ok) {
     throw new Error(
       result.msg ??
         result.message ??
         result.error_description ??
+        result.error ??
         `Supabase authentication failed (${response.status}).`,
     );
   }
   return result;
+}
+
+function saveAuthSession(session: AuthSessionResponse) {
+  if (
+    typeof session.access_token !== "string" ||
+    typeof session.refresh_token !== "string" ||
+    typeof session.expires_in !== "number" ||
+    !Number.isFinite(session.expires_in) ||
+    session.expires_in <= 0
+  ) {
+    throw new Error("Supabase returned an invalid authentication session.");
+  }
+
+  window.sessionStorage.setItem(
+    sessionKey,
+    JSON.stringify({
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+      expires_at: Date.now() + session.expires_in * 1000,
+    }),
+  );
+}
+
+export async function signUpWithEmail(name: string, email: string, password: string) {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Account registration requires Supabase. Configure its URL and anon key.");
+  }
+
+  const accessToken = await getSupabaseAccessToken();
+  if (!accessToken) throw new Error("Could not create a Supabase session.");
+
+  const currentUser = await authRequest<{ is_anonymous?: boolean }>(
+    "user",
+    {},
+    { method: "GET", accessToken },
+  );
+  if (currentUser.is_anonymous === false) {
+    throw new Error("This browser already has a registered account. Sign in from the account page.");
+  }
+
+  await authRequest(
+    "user",
+    { email, password, data: { full_name: name } },
+    { method: "PUT", accessToken },
+  );
+}
+
+export async function signInWithPassword(email: string, password: string) {
+  const session = await authRequest<AuthSessionResponse>("token?grant_type=password", {
+    email,
+    password,
+  });
+  saveAuthSession(session);
 }
 
 export async function getSupabaseAccessToken() {
@@ -60,34 +137,19 @@ export async function getSupabaseAccessToken() {
 
     if (session.expires_at > Date.now() + 60_000) return session.access_token;
     if (session.refresh_token) {
-      const refreshed = await authRequest<{
-        access_token: string;
-        refresh_token: string;
-        expires_in: number;
-      }>("token?grant_type=refresh_token", { refresh_token: session.refresh_token });
-      const nextSession = {
-        access_token: refreshed.access_token,
-        refresh_token: refreshed.refresh_token,
-        expires_at: Date.now() + refreshed.expires_in * 1000,
-      };
-      window.sessionStorage.setItem(sessionKey, JSON.stringify(nextSession));
-      return nextSession.access_token;
+      const refreshed = await authRequest<AuthSessionResponse>(
+        "token?grant_type=refresh_token",
+        { refresh_token: session.refresh_token },
+      );
+      saveAuthSession(refreshed);
+      return refreshed.access_token;
     }
     window.sessionStorage.removeItem(sessionKey);
   }
 
-  const anonymousUser = await authRequest<{
-    access_token: string;
-    refresh_token: string;
-    expires_in: number;
-  }>("signup", {});
-  const session = {
-    access_token: anonymousUser.access_token,
-    refresh_token: anonymousUser.refresh_token,
-    expires_at: Date.now() + anonymousUser.expires_in * 1000,
-  };
-  window.sessionStorage.setItem(sessionKey, JSON.stringify(session));
-  return session.access_token;
+  const anonymousUser = await authRequest<AuthSessionResponse>("signup", {});
+  saveAuthSession(anonymousUser);
+  return anonymousUser.access_token;
 }
 
 export async function supabaseRequest<T>(

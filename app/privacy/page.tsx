@@ -13,9 +13,9 @@ const sections = [
       "When Supabase is configured, your prompts and generated responses are saved to your private workspace so you can reopen conversations. If a model endpoint is configured, the prompt, recent conversation context, and selected language are sent to that endpoint to generate a response. Your Supabase access token is used to validate the request and is not forwarded to the model endpoint. When no model endpoint is configured, the app shows a clearly labeled demo preview instead of sending a model request.",
   },
   {
-    title: "Anonymous workspace",
+    title: "Accounts and workspace",
     content:
-      "The workspace uses a Supabase anonymous account and does not ask for an email address. Its session token is kept in this browser tab's session storage, so a page refresh in the same tab can restore access. Closing the tab or clearing site data can end access to that anonymous account; anonymous accounts cannot be recovered or automatically transferred to another browser or device. Workspace records can remain in Supabase after the session is lost.",
+      "The playground starts with a Supabase anonymous account and does not require an email address to explore. You can link that workspace to an email address and password from Create account, preserving its conversations. Account email addresses and names are handled by Supabase Auth. The session token is kept in this browser tab's session storage; signing in lets you access the account in another browser. Clearing site data removes the local session, but does not delete saved workspace records.",
   },
   {
     title: "Feedback and evaluation",

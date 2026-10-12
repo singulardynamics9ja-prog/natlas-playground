@@ -64,12 +64,20 @@ export default function Home() {
           </span>
           <span className="text-sm font-semibold tracking-wide">N-ATLAS</span>
         </Link>
-        <Link
-          href="/chat"
-          className="rounded-lg border border-white/10 px-4 py-2.5 text-xs font-medium text-slate-200 transition hover:border-[#008751]/60 hover:bg-[#008751]/10 hover:text-white"
-        >
-          Open Playground <span aria-hidden="true">↗</span>
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/signup"
+            className="rounded-lg border border-white/10 px-4 py-2.5 text-xs font-medium text-slate-200 transition hover:border-[#008751]/60 hover:bg-[#008751]/10 hover:text-white"
+          >
+            Create account
+          </Link>
+          <Link
+            href="/chat"
+            className="rounded-lg bg-[#008751] px-4 py-2.5 text-xs font-medium text-white transition hover:bg-[#07975f]"
+          >
+            Open Playground <span aria-hidden="true">↗</span>
+          </Link>
+        </div>
       </nav>
 
       <section className="relative mx-auto grid max-w-7xl items-center gap-14 px-5 pb-20 pt-16 sm:px-8 sm:pt-24 lg:grid-cols-[1.05fr_0.95fr] lg:gap-16 lg:px-10 lg:pb-28 lg:pt-28">
