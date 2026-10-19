@@ -1,16 +1,32 @@
 const supportedLanguages = new Set(["English", "Yoruba", "Hausa", "Igbo"]);
 
+// Allow slow first responses on hosts that honor this (e.g. Vercel).
+export const maxDuration = 60;
+
 type ChatRequest = {
   messages?: unknown;
   language?: unknown;
 };
 
+type OpenAIChatResponse = {
+  choices?: { message?: { content?: unknown } }[];
+};
+
+function buildSystemPrompt(language: string) {
+  return [
+    "You are a friendly, helpful assistant built on N-ATLaS, a model trained by Awarri AI technologies.",
+    `Always reply in ${language}, unless the user clearly asks for a different language.`,
+    "Keep answers clear and reasonably concise.",
+  ].join(" ");
+}
+
 export async function POST(request: Request) {
   const authorization = request.headers.get("authorization");
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, "");
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  const modelUrl = process.env.NATLAS_CHAT_API_URL;
+  const modelUrl = process.env.NATLAS_CHAT_API_URL; // full URL, ends with /v1/chat/completions
   const modelKey = process.env.NATLAS_CHAT_API_KEY;
+  const modelName = process.env.NATLAS_MODEL || "NCAIR1/N-ATLaS";
 
   if (!supabaseUrl || !supabaseKey) {
     return Response.json({ error: "Supabase is not configured on this deployment." }, { status: 503 });
@@ -71,12 +87,24 @@ export async function POST(request: Request) {
   const headers: HeadersInit = { "Content-Type": "application/json" };
   if (modelKey) headers.Authorization = `Bearer ${modelKey}`;
 
+  // Keep only role/content from the client, and add our own system prompt.
+  const chatMessages = (body.messages as { role: string; content: string }[]).map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+
   let modelResponse: Response;
   try {
     modelResponse = await fetch(modelUrl, {
       method: "POST",
       headers,
-      body: JSON.stringify({ messages: body.messages, language: body.language }),
+      body: JSON.stringify({
+        model: modelName,
+        messages: [{ role: "system", content: buildSystemPrompt(body.language) }, ...chatMessages],
+        max_tokens: 600,
+        temperature: 0.1,
+        repetition_penalty: 1.12,
+      }),
       cache: "no-store",
       signal: AbortSignal.timeout(60_000),
     });
@@ -89,18 +117,20 @@ export async function POST(request: Request) {
     return Response.json({ error: "The N-ATLAS model request failed. Please try again." }, { status: 502 });
   }
 
-  let modelBody: { response?: unknown };
+  let modelBody: OpenAIChatResponse;
   try {
-    modelBody = (await modelResponse.json()) as { response?: unknown };
+    modelBody = (await modelResponse.json()) as OpenAIChatResponse;
   } catch {
     return Response.json({ error: "The N-ATLAS endpoint returned an invalid response." }, { status: 502 });
   }
-  if (typeof modelBody.response !== "string" || !modelBody.response.trim()) {
+
+  const content = modelBody.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || !content.trim()) {
     return Response.json(
-      { error: 'The N-ATLAS endpoint response must contain a non-empty "response" string.' },
+      { error: "The N-ATLAS endpoint returned an empty response." },
       { status: 502 },
     );
   }
 
-  return Response.json({ response: modelBody.response });
+  return Response.json({ response: content.trim() });
 }
